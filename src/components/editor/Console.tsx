@@ -1,5 +1,5 @@
-// Improved Console.tsx
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import { useDebouncedCallback } from 'use-debounce';
 import { ConsoleMessage } from '../../types';
 import { Terminal, X, AlertCircle, Info, AlertTriangle, ChevronDown } from 'lucide-react';
 
@@ -29,6 +29,7 @@ const Console: React.FC<ConsoleProps> = ({ messages, onClear }) => {
       default: return 'text-green-300';
     }
   };
+
 
   if (!isExpanded) {
     return (
