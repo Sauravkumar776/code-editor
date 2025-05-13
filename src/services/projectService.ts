@@ -1,69 +1,98 @@
-import { collection, addDoc, updateDoc, deleteDoc, doc, getDoc, getDocs, query, where, orderBy } from 'firebase/firestore';
-import { db } from './firebase';
+import { supabase } from './supabase';
 import { Project, EditorContent } from '../types';
-import { v4 as uuidv4 } from 'uuid';
 
-const COLLECTION_NAME = 'projects';
+export const createProject = async (
+  userId: string,
+  title: string,
+  description: string,
+  content: EditorContent,
+  isPublic: boolean = false
+): Promise<string> => {
+  const { data, error } = await supabase
+    .from('projects')
+    .insert({
+      title,
+      description,
+      content,
+      user_id: userId,
+      is_public: isPublic,
+    })
+    .select('id')
+    .single();
 
-export const createProject = async (userId: string, title: string, description: string, content: EditorContent): Promise<string> => {
-  const project: Omit<Project, 'id'> = {
-    title,
-    description,
-    content,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    userId
-  };
-
-  const docRef = await addDoc(collection(db, COLLECTION_NAME), project);
-  return docRef.id;
+  if (error) throw error;
+  return data.id;
 };
 
 export const getProject = async (projectId: string): Promise<Project | null> => {
-  const docRef = doc(db, COLLECTION_NAME, projectId);
-  const docSnap = await getDoc(docRef);
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('id', projectId)
+    .single();
 
-  if (docSnap.exists()) {
-    return { id: docSnap.id, ...docSnap.data() } as Project;
-  }
-  
-  return null;
+  if (error) throw error;
+  return data as Project;
 };
 
-export const updateProject = async (projectId: string, data: Partial<Project>): Promise<void> => {
-  const docRef = doc(db, COLLECTION_NAME, projectId);
-  await updateDoc(docRef, { ...data, updatedAt: Date.now() });
+export const updateProject = async (
+  projectId: string,
+  updates: Partial<Project>
+): Promise<void> => {
+  const { error } = await supabase
+    .from('projects')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', projectId);
+
+  if (error) throw error;
 };
 
 export const deleteProject = async (projectId: string): Promise<void> => {
-  const docRef = doc(db, COLLECTION_NAME, projectId);
-  await deleteDoc(docRef);
+  const { error } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', projectId);
+
+  if (error) throw error;
 };
 
 export const getUserProjects = async (userId: string): Promise<Project[]> => {
-  const q = query(
-    collection(db, COLLECTION_NAME),
-    where('userId', '==', userId),
-    orderBy('updatedAt', 'desc')
-  );
-  
-  const querySnapshot = await getDocs(q);
-  const projects: Project[] = [];
-  
-  querySnapshot.forEach((doc) => {
-    projects.push({ id: doc.id, ...doc.data() } as Project);
-  });
-  
-  return projects;
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('user_id', userId)
+    .order('updated_at', { ascending: false });
+
+  if (error) throw error;
+  return data as Project[];
 };
 
-export const createAnonymousProject = (content: EditorContent): Project => {
-  return {
-    id: uuidv4(),
-    title: 'Untitled Project',
-    description: '',
-    content,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
+export const getPublicProjects = async (): Promise<Project[]> => {
+  const { data, error } = await supabase
+    .from('projects')
+    .select('*')
+    .eq('is_public', true)
+    .order('updated_at', { ascending: false });
+
+  if (error) throw error;
+  return data as Project[];
+};
+
+export const forkProject = async (
+  projectId: string,
+  userId: string
+): Promise<string> => {
+  const project = await getProject(projectId);
+  if (!project) throw new Error('Project not found');
+
+  return createProject(
+    userId,
+    `${project.title} (Fork)`,
+    project.description,
+    project.content,
+    false
+  );
 };

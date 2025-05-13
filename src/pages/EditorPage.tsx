@@ -1,18 +1,21 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { v4 as uuidv4 } from 'uuid';
 import { useAuth } from '../contexts/AuthContext';
 import { EditorContent, ConsoleMessage, Project } from '../types';
 import CodeEditor from '../components/editor/CodeEditor';
 import Console from '../components/editor/Console';
-import { Save, Share } from 'lucide-react';
+import Preview from '../components/editor/Preview';
+import { Save, Share, Trash2, Copy } from 'lucide-react';
+import { useEditorStore } from '../store/editorStore';
 import {
   createProject,
   getProject,
   updateProject,
-  createAnonymousProject
+  deleteProject,
+  forkProject
 } from '../services/projectService';
-import { useDebounce, useDebouncedCallback } from 'use-debounce';
+import { useDebouncedCallback } from 'use-debounce';
 
 const DEFAULT_CONTENT: EditorContent = {
   html: `<div class="container">
@@ -42,17 +45,21 @@ const EditorPage: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const { currentUser } = useAuth();
   const navigate = useNavigate();
+  const { 
+    currentProject,
+    setCurrentProject,
+    updateContent,
+    autoSave
+  } = useEditorStore();
 
-  const [content, setContent] = useState<EditorContent>(DEFAULT_CONTENT);
   const [consoleMessages, setConsoleMessages] = useState<ConsoleMessage[]>([]);
-  const [project, setProject] = useState<Project | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [projectTitle, setProjectTitle] = useState('');
   const [projectDescription, setProjectDescription] = useState('');
+  const [isPublic, setIsPublic] = useState(false);
   const [horizontalSplit, setHorizontalSplit] = useState(70);
   const [isDragging, setIsDragging] = useState(false);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     if (projectId) {
@@ -60,93 +67,50 @@ const EditorPage: React.FC = () => {
         try {
           const project = await getProject(projectId);
           if (project) {
-            setProject(project);
-            setContent(project.content);
+            setCurrentProject(project);
             setProjectTitle(project.title);
-            setProjectDescription(project.description);
+            setProjectDescription(project.description || '');
+            setIsPublic(project.is_public || false);
           }
         } catch (error) {
           console.error('Error fetching project:', error);
+          navigate('/editor');
         }
       };
-
       fetchProject();
     } else {
-      setProject(createAnonymousProject(DEFAULT_CONTENT));
+      setCurrentProject({
+        id: uuidv4(),
+        title: 'Untitled Project',
+        description: '',
+        content: DEFAULT_CONTENT,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        is_public: false,
+        version: 1
+      });
     }
-  }, [projectId]);
+  }, [projectId, setCurrentProject, navigate]);
 
-  useEffect(() => {
-    const iframe = iframeRef.current;
-    if (!iframe) return;
-
-    const html = `
-      <html>
-        <head>
-          <style>${content.css}</style>
-        </head>
-        <body>
-          ${content.html}
-          <script>
-            const log = console.log;
-            const error = console.error;
-            const warn = console.warn;
-            const info = console.info;
-
-            console.log = (...args) => {
-              window.parent.postMessage({ type: 'log', message: args.join(' ') }, '*');
-              log(...args);
-            };
-
-            console.error = (...args) => {
-              window.parent.postMessage({ type: 'error', message: args.join(' ') }, '*');
-              error(...args);
-            };
-
-            console.warn = (...args) => {
-              window.parent.postMessage({ type: 'warn', message: args.join(' ') }, '*');
-              warn(...args);
-            };
-
-            console.info = (...args) => {
-              window.parent.postMessage({ type: 'info', message: args.join(' ') }, '*');
-              info(...args);
-            };
-
-            try {
-              ${content.js}
-            } catch (err) {
-              console.error(err);
-            }
-          </script>
-        </body>
-      </html>
-    `;
-
-    iframe.srcdoc = html;
-  }, [content]);
-
-  const debouncedLog = useDebouncedCallback(
-    (message: string, type: 'log' | 'error' | 'warn' | 'info') => {
-      handleConsoleLog(message, type);
-    },
-    500
-  );
-
-  useEffect(() => {
-      const handleMessage = (event: MessageEvent) => {
-      if (['log', 'error', 'warn', 'info'].includes(event.data.type)) {
-        debouncedLog(event.data.message, event.data.type);
-      }
-    };
-  
-    window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
-  }, [debouncedLog]);
-  
+  const debouncedSave = useDebouncedCallback(async (content: EditorContent) => {
+    if (!currentUser || !currentProject || !autoSave) return;
+    try {
+      await updateProject(currentProject.id, {
+        content,
+        title: projectTitle,
+        description: projectDescription,
+        is_public: isPublic
+      });
+    } catch (error) {
+      console.error('Error auto-saving:', error);
+    }
+  }, 2000);
 
   const handleContentChange = (newContent: EditorContent) => {
-    setContent(newContent);
+    updateContent(newContent);
+    if (currentProject) {
+      debouncedSave(newContent);
+    }
   };
 
   const handleConsoleLog = (message: string, type: 'log' | 'error' | 'warn' | 'info') => {
@@ -172,21 +136,23 @@ const EditorPage: React.FC = () => {
   };
 
   const saveProject = async () => {
-    if (!currentUser) return;
+    if (!currentUser || !currentProject) return;
     setIsSaving(true);
     try {
-      if (project && project.id && projectId) {
+      if (projectId) {
         await updateProject(projectId, {
           title: projectTitle,
           description: projectDescription,
-          content
+          content: currentProject.content,
+          is_public: isPublic
         });
       } else {
         const newProjectId = await createProject(
           currentUser.uid,
           projectTitle,
           projectDescription,
-          content
+          currentProject.content,
+          isPublic
         );
         navigate(`/editor/${newProjectId}`);
       }
@@ -195,6 +161,30 @@ const EditorPage: React.FC = () => {
       console.error('Error saving project:', error);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!currentProject?.id || !confirm('Are you sure you want to delete this project?')) return;
+    try {
+      await deleteProject(currentProject.id);
+      navigate('/my-projects');
+    } catch (error) {
+      console.error('Error deleting project:', error);
+    }
+  };
+
+  const handleFork = async () => {
+    if (!currentUser) {
+      navigate('/login');
+      return;
+    }
+    if (!currentProject?.id) return;
+    try {
+      const newProjectId = await forkProject(currentProject.id, currentUser.uid);
+      navigate(`/editor/${newProjectId}`);
+    } catch (error) {
+      console.error('Error forking project:', error);
     }
   };
 
@@ -209,22 +199,48 @@ const EditorPage: React.FC = () => {
     }
   };
 
+  if (!currentProject) return null;
+
   return (
     <div className="flex flex-col h-screen select-none" onMouseUp={handleMouseUp}>
       <div className="bg-gray-900 border-b border-gray-800 p-3 flex justify-between items-center shadow-sm">
-        <h1 className="text-xl font-semibold text-white">
-          {project ? project.title || 'Untitled Project' : 'New Project'}
-        </h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-xl font-semibold text-white">
+            {currentProject.title || 'Untitled Project'}
+          </h1>
+          {autoSave && <span className="text-sm text-gray-400">Auto-saving enabled</span>}
+        </div>
         <div className="flex gap-2">
-          <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2 text-sm font-medium">
+          {currentUser && currentProject.id && (
+            <>
+              <button
+                onClick={handleDelete}
+                className="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 flex items-center gap-2 text-sm font-medium"
+              >
+                <Trash2 className="w-4 h-4" /> Delete
+              </button>
+              <button
+                onClick={handleFork}
+                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 flex items-center gap-2 text-sm font-medium"
+              >
+                <Copy className="w-4 h-4" /> Fork
+              </button>
+            </>
+          )}
+          <button
+            onClick={handleSave}
+            className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 flex items-center gap-2 text-sm font-medium"
+          >
             <Save className="w-4 h-4" /> Save
           </button>
-          {project?.id && (
-            <button className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600 flex items-center gap-2 text-sm font-medium"
+          {currentProject.id && (
+            <button
+              className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600 flex items-center gap-2 text-sm font-medium"
               onClick={() => {
                 navigator.clipboard.writeText(window.location.href);
                 alert('Link copied to clipboard!');
-              }}>
+              }}
+            >
               <Share className="w-4 h-4" /> Share
             </button>
           )}
@@ -233,15 +249,24 @@ const EditorPage: React.FC = () => {
 
       <div className="flex flex-1">
         <div className="w-1/2 border-r border-gray-800 bg-gray-900">
-          <CodeEditor content={content} onChange={handleContentChange} />
+          <CodeEditor
+            content={currentProject.content}
+            onChange={handleContentChange}
+          />
         </div>
         <div className="w-1/2 bg-gray-950 flex flex-col" onMouseMove={handleMouseMove}>
           <div className="flex-1 overflow-hidden" style={{ height: `${horizontalSplit}%` }}>
-            <iframe ref={iframeRef} title="preview" className="w-full h-full border-none" sandbox="allow-scripts" />
+            <Preview
+              content={currentProject.content}
+              onConsoleLog={handleConsoleLog}
+            />
           </div>
-          <div className="h-2 bg-gray-800 cursor-row-resize hover:bg-blue-600 transition-colors" onMouseDown={handleMouseDown} />
+          <div
+            className="h-2 bg-gray-800 cursor-row-resize hover:bg-blue-600 transition-colors"
+            onMouseDown={handleMouseDown}
+          />
           <div className="overflow-hidden" style={{ height: `${100 - horizontalSplit}%` }}>
-            <Console messages={consoleMessages} onClear={clearConsole}  />
+            <Console messages={consoleMessages} onClear={clearConsole} />
           </div>
         </div>
       </div>
@@ -250,35 +275,58 @@ const EditorPage: React.FC = () => {
         <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
           <div className="bg-gray-900 p-6 rounded-lg w-full max-w-md shadow-lg">
             <h2 className="text-xl font-semibold mb-4 text-white">Save Project</h2>
-            <div className="mb-4">
-              <label className="block text-gray-300 text-sm font-medium mb-2" htmlFor="projectTitle">
-                Title
-              </label>
-              <input
-                type="text"
-                id="projectTitle"
-                value={projectTitle}
-                onChange={(e) => setProjectTitle(e.target.value)}
-                className="w-full p-2 bg-gray-800 border border-gray-700 rounded-md text-white"
-              />
+            <div className="space-y-4">
+              <div>
+                <label className="block text-gray-300 text-sm font-medium mb-2" htmlFor="projectTitle">
+                  Title
+                </label>
+                <input
+                  type="text"
+                  id="projectTitle"
+                  value={projectTitle}
+                  onChange={(e) => setProjectTitle(e.target.value)}
+                  className="w-full p-2 bg-gray-800 border border-gray-700 rounded-md text-white"
+                  placeholder="Enter project title"
+                />
+              </div>
+              <div>
+                <label className="block text-gray-300 text-sm font-medium mb-2" htmlFor="projectDescription">
+                  Description
+                </label>
+                <textarea
+                  id="projectDescription"
+                  value={projectDescription}
+                  onChange={(e) => setProjectDescription(e.target.value)}
+                  rows={4}
+                  className="w-full p-2 bg-gray-800 border border-gray-700 rounded-md text-white"
+                  placeholder="Enter project description"
+                />
+              </div>
+              <div className="flex items-center">
+                <input
+                  type="checkbox"
+                  id="isPublic"
+                  checked={isPublic}
+                  onChange={(e) => setIsPublic(e.target.checked)}
+                  className="mr-2"
+                />
+                <label htmlFor="isPublic" className="text-gray-300 text-sm">
+                  Make project public
+                </label>
+              </div>
             </div>
-            <div className="mb-4">
-              <label className="block text-gray-300 text-sm font-medium mb-2" htmlFor="projectDescription">
-                Description
-              </label>
-              <textarea
-                id="projectDescription"
-                value={projectDescription}
-                onChange={(e) => setProjectDescription(e.target.value)}
-                rows={4}
-                className="w-full p-2 bg-gray-800 border border-gray-700 rounded-md text-white"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowSaveModal(false)} className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600">
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                onClick={() => setShowSaveModal(false)}
+                className="px-4 py-2 bg-gray-700 text-white rounded-md hover:bg-gray-600"
+              >
                 Cancel
               </button>
-              <button onClick={saveProject} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-500" disabled={isSaving}>
+              <button
+                onClick={saveProject}
+                disabled={isSaving || !projectTitle.trim()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-500"
+              >
                 {isSaving ? 'Saving...' : 'Save Project'}
               </button>
             </div>

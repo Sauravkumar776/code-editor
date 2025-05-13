@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import Editor from '@monaco-editor/react';
 import { EditorContent } from '../../types';
 import EditorTabs from './EditorTabs';
+import EditorSettings from './EditorSettings';
 import { FileCode, Paintbrush, Folder } from 'lucide-react';
+import { useEditorStore } from '../../store/editorStore';
 
 interface CodeEditorProps {
   content: EditorContent;
@@ -13,6 +15,7 @@ type EditorTab = 'html' | 'css' | 'js';
 
 const CodeEditor: React.FC<CodeEditorProps> = ({ content, onChange }) => {
   const [activeTab, setActiveTab] = useState<EditorTab>('html');
+  const { isDarkTheme, fontSize, tabSize, wordWrap, minimap } = useEditorStore();
 
   const handleEditorChange = (value: string | undefined) => {
     if (value !== undefined) {
@@ -48,25 +51,28 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ content, onChange }) => {
 
   return (
     <div className="flex flex-col h-full border border-gray-700 rounded-md overflow-hidden">
-      <EditorTabs 
-        tabs={tabs} 
-        activeTab={activeTab} 
-        onChange={(tab) => setActiveTab(tab as EditorTab)} 
-      />
+      <div className="flex justify-between items-center bg-gray-800 border-b border-gray-700">
+        <EditorTabs 
+          tabs={tabs} 
+          activeTab={activeTab} 
+          onChange={(tab) => setActiveTab(tab as EditorTab)} 
+        />
+        <EditorSettings />
+      </div>
       <div className="flex-grow relative">
         <Editor
           height="100%"
           language={getLanguageForTab(activeTab)}
           value={content[activeTab]}
           onChange={handleEditorChange}
-          theme="vs-dark"
+          theme={isDarkTheme ? "vs-dark" : "light"}
           options={{
-            minimap: { enabled: false },
-            fontSize: 14,
-            wordWrap: 'on',
+            minimap: { enabled: minimap },
+            fontSize: fontSize,
+            wordWrap: wordWrap ? 'on' : 'off',
+            tabSize: tabSize,
             scrollBeyondLastLine: false,
             automaticLayout: true,
-            tabSize: 2,
             lineNumbers: 'on',
             roundedSelection: false,
             renderLineHighlight: 'all',

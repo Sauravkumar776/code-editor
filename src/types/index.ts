@@ -5,6 +5,9 @@ export interface EditorContent {
 }
 
 export interface Project {
+  is_public: any;
+  updated_at(updated_at: any): import("react").ReactNode;
+  version: ReactNode;
   id: string;
   title: string;
   description: string;
